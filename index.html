@@ -217,7 +217,6 @@ a.tel-link{color:var(--teal);font-weight:800}
 .field input,.field select,.field textarea{width:100%;border:1.5px solid var(--line);background:#FBF9F4;border-radius:13px;padding:13px 15px;font-family:var(--font-b);font-size:15px;color:var(--ink);transition:border-color .2s,box-shadow .2s;outline:none}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--teal);box-shadow:0 0 0 4px rgba(14,124,138,.12);background:#fff}
 .field textarea{resize:vertical;min-height:120px}
-.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
 .form-status{display:none;margin-top:16px;padding:14px 18px;border-radius:13px;font-weight:700;font-size:15px;line-height:1.5}
 .form-status.show{display:block}
 .form-status.ok{background:#E5F6EC;color:#1B6A3C;border:1.5px solid #BFE8CF}
@@ -522,21 +521,17 @@ footer h4{font-family:var(--font-d);color:#fff;font-size:17px;margin-bottom:14px
         <h3>Send us a message</h3>
         <p class="sub">We'll reply as soon as we can — usually within one business day.</p>
         <div class="frow">
-          <div class="field"><label for="cf-name">Parent / guardian name *</label><input id="cf-name" name="name" type="text" autocomplete="name" required></div>
-          <div class="field"><label for="cf-email">Email address *</label><input id="cf-email" name="email" type="email" autocomplete="email" required></div>
+          <div class="field"><label for="cf-first">First name *</label><input id="cf-first" name="first_name" type="text" autocomplete="given-name" required></div>
+          <div class="field"><label for="cf-last">Last name *</label><input id="cf-last" name="last_name" type="text" autocomplete="family-name" required></div>
         </div>
-        <div class="frow">
-          <div class="field"><label for="cf-phone">Phone</label><input id="cf-phone" name="phone" type="tel" autocomplete="tel"></div>
-          <div class="field"><label for="cf-interest">What are you reaching about?</label>
-            <select id="cf-interest" name="interest">
-              <option>Speech-language therapy</option>
-              <option>Feeding &amp; swallowing</option>
-              <option>Feeding &amp; Swallowing Intensives (2-week)</option>
-              <option>Evaluation / not sure yet</option>
-            </select></div>
-        </div>
-        <div class="field"><label for="cf-message">Tell us about your child *</label><textarea id="cf-message" name="message" required placeholder="Age, what you've noticed, current services — anything that helps us prepare."></textarea></div>
-        <input class="hp" type="text" id="cf-company" name="_company" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <div class="field"><label for="cf-email">Email address *</label><input id="cf-email" name="email" type="email" autocomplete="email" required></div>
+        <div class="field"><label for="cf-message">Message *</label><textarea id="cf-message" name="message" required placeholder="Tell us a little about your child and what you're looking for…"></textarea></div>
+        <!-- honeypot: type="hidden" is deliberate — a type="text" honeypot gets
+             autofilled by Chrome (observed on codewavellc: filled with "United
+             States"), which sends _gotcha to Form Plume and quarantines real
+             submissions to spam. Browsers never autofill hidden inputs; bots
+             that fill all inputs still trip it. -->
+        <input type="hidden" name="_company" autocomplete="off" aria-hidden="true">
         <button class="btn btn-coral mag" id="cf-submit" type="submit" style="width:100%;justify-content:center">Send message →</button>
         <div class="form-status" id="cf-status" role="status"></div>
       </form>
@@ -578,7 +573,7 @@ footer h4{font-family:var(--font-d);color:#fff;font-size:17px;margin-bottom:14px
    3. Settings → Domain restrictions: allow ONLY therapytalks.info (+ hosting hostnames).
    4. Paste the Connect-tab URL below in place of YOUR_FORM_SLUG.
    Time-trap token fetched on load rejects bot-speed (<3s) submissions. */
-const FORM_ENDPOINT = 'https://api.formplume.com/f/YOUR_FORM_SLUG'; // ← replace after signup
+const FORM_ENDPOINT = 'https://api.formplume.com/f/c43f3f4ccd4be1b6fae7cd34'; // therapytalks-contact
 const DIRECT_EMAIL  = 'kristina@therapytalks.info';
 
 /* ================= scroll progress + nav ================= */
@@ -632,42 +627,78 @@ const DIRECT_EMAIL  = 'kristina@therapytalks.info';
   });
 })();
 
-/* ================= contact form (Form Plume) ================= */
-(function(){
-  const f=document.getElementById('contact-form'), statusEl=document.getElementById('cf-status');
+/* ================= contact form (Form Plume) =================
+   Proven pattern from codewavellc (2026-08-22). Key fixes baked in:
+   1. first_name/last_name/email MUST be real fields (not just _subject/_replyto)
+      — Form Plume's email-hygiene check needs a verifiable submitter email field,
+      or it accepts (200) but quarantines the email to spam.
+   2. Time-trap token is SINGLE-USE (server-enforced; 2nd use → 422). Fetch fresh
+      per submit, pre-age at load past the 3s "bot speed" floor, retry once on 422.
+   3. Honeypot is type="hidden" (Chrome autofills type="text" honeypots → _gotcha → spam).
+   4. NO client-side honeypot early-exit — always POST, let Form Plume decide. */
+(async function(){
+  const f = document.getElementById('contact-form'), statusEl = document.getElementById('cf-status');
   if(!f) return;
-  function show(kind,html){ statusEl.className='form-status show '+kind; statusEl.innerHTML=html; }
+  function show(kind, html){ statusEl.className='form-status show '+kind; statusEl.innerHTML=html; }
   function escHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
-  /* time-trap: Form Plume signs a token with an issue timestamp (HMAC-SHA256).
-     Submissions <3s after page load — bot speed — are rejected. Silent no-op
-     until the real endpoint is pasted in. */
-  let ttField='', ttToken='';
-  if(FORM_ENDPOINT && !FORM_ENDPOINT.includes('YOUR_FORM_SLUG')){
-    fetch(FORM_ENDPOINT+'/time-trap').then(r=>r.ok?r.json():null).then(j=>{
-      if(j&&j.field){ ttField=j.field; ttToken=j.token||''; }
-    }).catch(()=>{});
-  }
-
-  f.addEventListener('submit',async e=>{
-    e.preventDefault();
-    const name=f.name.value.trim(), email=f.email.value.trim(), msg=f.message.value.trim();
-    if(!name||!email||!msg){ show('warn','Please fill in your name, email and a few words about what you need.'); return; }
-    if(f._company.value!==''){ show('ok','Thanks — we\'ll be in touch shortly!'); f.reset(); return; } // bot ate the honeypot
-    const btn=document.getElementById('cf-submit'); btn.disabled=true; btn.textContent='Sending…';
-    const data=new FormData();
-    data.append('_subject','New inquiry — '+name);
-    data.append('_replyto',email);
-    ['phone','interest'].forEach(k=>{ if(f[k]) data.append(k,f[k].value); });
-    if(ttField) data.append(ttField,ttToken);
-    data.append('message',msg+'\n\n— sent from therapytalks.info');
+  async function getTT(){
+    if(!FORM_ENDPOINT || FORM_ENDPOINT.includes('YOUR_FORM_SLUG')) return {field:'',token:''};
     try{
-      const r=await fetch(FORM_ENDPOINT,{method:'POST',body:data});
-      if(!r.ok && !FORM_ENDPOINT.includes('YOUR_FORM_SLUG')) throw new Error('HTTP '+r.status);
-      show('ok','✓ <b>Message sent!</b> We\'ll reply as soon as we can — usually within one business day. Thank you, '+escHtml(name.split(' ')[0])+'!');
+      const r = await fetch(FORM_ENDPOINT + '/time-trap');
+      if(!r.ok) return {field:'',token:''};
+      const j = await r.json();
+      return {field:j.field||'', token:j.token||'', issued:Date.now()};
+    }catch(e){ return {field:'',token:''}; }
+  }
+  const sleep = ms => new Promise(res => setTimeout(res, ms));
+  let tt = await getTT(); // start the clock the moment the page loads
+
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    const first=f.first_name.value.trim(), last=f.last_name.value.trim();
+    const email=f.email.value.trim(), msg=f.message.value.trim();
+    const name = (first + ' ' + last).trim();
+    if(!first || !last || !email || !msg){ show('warn','Please fill in your name, email and a few words about what you need.'); return; }
+    const btn=document.getElementById('cf-submit'); btn.disabled=true; btn.textContent='Sending…';
+    const placeholder = FORM_ENDPOINT.includes('YOUR_FORM_SLUG');
+
+    // first_name + last_name + email MUST be real fields (see note above).
+    const base = [
+      ['first_name', first],
+      ['last_name', last],
+      ['name', name],
+      ['email', email],
+      ['_subject','New inquiry — '+name],
+      ['_replyto', email],
+      ['message', msg + '\n\n— sent from therapytalks.info'],
+    ];
+    if(f._company.value !== '') base.push(['_gotcha', f._company.value]); // honeypot
+    if(!placeholder){ const key = (typeof FORM_ACCESS_KEY !== 'undefined') ? FORM_ACCESS_KEY : ''; if(key) base.push(['access_key', key]); }
+
+    const build = (t) => { const d = new FormData(); base.forEach(p => d.append(p[0], p[1])); if(t.field && t.token) d.append(t.field, t.token); return d; };
+    const doPost = (d) => fetch(FORM_ENDPOINT, {method:'POST', headers:{'Accept':'application/json'}, body:d});
+
+    try{
+      if(tt.token){ const age = Date.now() - (tt.issued||0); if(age < 3000){ btn.textContent='Verifying…'; await sleep(3000 - age + 250); } }
+      btn.textContent='Sending…';
+      let d = build(tt);
+      let r = await doPost(d);
+      if(!r.ok && !placeholder && r.status === 422){
+        btn.textContent='Verifying…';
+        await sleep(3100);
+        const fresh = await getTT();
+        await sleep(3300);
+        btn.textContent='Sending…';
+        d = build(fresh);
+        r = await doPost(d);
+      }
+      if(!r.ok && !placeholder) throw new Error('HTTP '+r.status);
+      show('ok','✓ <b>Message sent!</b> We\'ll reply as soon as we can — usually within one business day. Thank you, '+escHtml(first)+'!');
       f.reset();
+      tt = await getTT(); // refresh the single-use token for any next send
     }catch(err){
-      if(FORM_ENDPOINT.includes('YOUR_FORM_SLUG')){
+      if(placeholder){
         show('warn','Almost live — the form backend is being connected right now. Meanwhile email us directly at <a href="mailto:'+DIRECT_EMAIL+'" style="color:inherit;text-decoration:underline"><b>'+DIRECT_EMAIL+'</b></a> and we\'ll pick it up fast.');
       } else {
         show('warn','Something hiccuped on send. Try again in a moment, or email us directly at <a href="mailto:'+DIRECT_EMAIL+'" style="color:inherit;text-decoration:underline"><b>'+DIRECT_EMAIL+'</b></a>.');

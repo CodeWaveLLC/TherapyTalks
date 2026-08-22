@@ -695,7 +695,7 @@ const DIRECT_EMAIL  = 'kristina@therapytalks.info';
         r = await doPost(d);
       }
       if(!r.ok && !placeholder) throw new Error('HTTP '+r.status);
-      show('ok','✓ <b>Message sent!</b> We\'ll reply as soon as we can — usually within one business day. Thank you, '+escHtml(first)+'!');
+      show('ok','✓ <b>Message sent!</b> We\'ll reply as soon as we can — usually within one business day. Thank you!');
       f.reset();
       tt = await getTT(); // refresh the single-use token for any next send
     }catch(err){

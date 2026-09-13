@@ -256,7 +256,12 @@
   .field input:focus,.field textarea:focus{outline:none;border-color:var(--pine);background:var(--white)}
   .field textarea{min-height:120px;resize:vertical}
   .form-card .btn{width:100%;justify-content:center;margin-top:.4rem}
-  .form-preview-note{margin-top:1rem;font-size:.78rem;color:var(--muted);background:var(--paper-2);border:1px dashed var(--line);border-radius:8px;padding:.6rem .8rem}
+  .form-card .btn[disabled]{opacity:.7;cursor:progress}
+  .form-status{display:none;margin-top:1rem;font-size:.9rem;line-height:1.5;padding:.8rem 1rem;border-radius:10px}
+  .form-status.show{display:block}
+  .form-status.ok{background:#E7F1EA;color:#1E4D3A;border:1px solid #BFD8C6}
+  .form-status.warn{background:#FBEEE2;color:#8A5312;border:1px solid #E6C79E}
+  .form-status.err{background:#F6E7E7;color:#8A2E2E;border:1px solid #E0B6B6}
   @media (max-width:860px){.contact-grid{grid-template-columns:1fr}}
 
   /* Footer */
@@ -567,8 +572,10 @@
       <div class="form-card reveal">
         <h3>Send us a message</h3>
         <p class="form-note">We&rsquo;ll reply as soon as we can, usually within one business day.</p>
-        <!-- FormPlume slot: c43f3f4ccd4be1b6fae7cd34 (see local-business-website skill) -->
-        <form action="https://formplume.com/s/c43f3f4ccd4be1b6fae7cd34" method="post" novalidate>
+        <!-- FormPlume (api.formplume.com/f/) — proven JS pattern from the previous build:
+             real first_name/last_name/email fields (email-hygiene check), hidden
+             honeypot, single-use time-trap token with one 422 retry. -->
+        <form id="contact-form" novalidate>
           <div class="field">
             <label for="fn">First name <span class="req" aria-hidden="true">*</span></label>
             <input id="fn" name="first_name" type="text" autocomplete="given-name" required>
@@ -585,9 +592,15 @@
             <label for="msg">How can we help? <span class="req" aria-hidden="true">*</span></label>
             <textarea id="msg" name="message" required></textarea>
           </div>
-          <button class="btn btn-primary" type="submit">Send message <span class="arr" aria-hidden="true">&rarr;</span></button>
+          <!-- Honeypot: type="hidden" is deliberate. A visible honeypot gets
+               autofilled by Chrome (observed on codewavellc: filled with "United
+               States"), which sends _gotcha to FormPlume and quarantines real
+               submissions to spam. Browsers never autofill hidden inputs; bots
+               that fill every field still trip it. -->
+          <input type="hidden" name="_company" autocomplete="off" aria-hidden="true">
+          <button class="btn btn-primary" id="cf-submit" type="submit">Send message <span class="arr" aria-hidden="true">&rarr;</span></button>
+          <div class="form-status" id="cf-status" role="status"></div>
         </form>
-        <p class="form-preview-note">Preview build: the live site loads the FormPlume script from <code>https://formplume.com/s/c43f3f4ccd4be1b6fae7cd34</code>. This preview wires the form fields directly to that endpoint and does not commit anything to GitHub.</p>
       </div>
     </div>
   </section>
@@ -615,6 +628,89 @@
       });
     }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
     document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+  })();
+
+  // Contact form (FormPlume) — proven pattern from the previous build.
+  // first_name/last_name/email are real fields (FormPlume's email-hygiene check
+  // needs a verifiable submitter email, or it accepts but quarantines to spam).
+  // Honeypot is type="hidden" (visible honeypots get Chrome-autofilled -> _gotcha).
+  // Time-trap token is single-use (server-enforced): fetch on load to pre-age past
+  // the 3s "bot speed" floor, retry once on 422 with a fresh token.
+  (async function(){
+    var FORM_ENDPOINT = 'https://api.formplume.com/f/c43f3f4ccd4be1b6fae7cd34'; // therapytalks-contact
+    var f = document.getElementById('contact-form');
+    if(!f) return;
+    var statusEl = document.getElementById('cf-status');
+    var btn = document.getElementById('cf-submit');
+    function show(kind, html){ statusEl.className = 'form-status show ' + kind; statusEl.innerHTML = html; }
+    function escHtml(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+    async function getTT(){
+      try{
+        var r = await fetch(FORM_ENDPOINT + '/time-trap');
+        if(!r.ok) return {field:'',token:''};
+        var j = await r.json();
+        return {field:j.field||'', token:j.token||'', issued:Date.now()};
+      }catch(e){ return {field:'',token:''}; }
+    }
+    var sleep = function(ms){ return new Promise(function(res){ setTimeout(res, ms); }); };
+    var tt = await getTT(); // start the clock the moment the page loads
+
+    f.addEventListener('submit', async function(e){
+      e.preventDefault();
+      var first = f.first_name.value.trim(), last = f.last_name.value.trim();
+      var email = f.email.value.trim(), msg = f.message.value.trim();
+      var name = (first + ' ' + last).trim();
+      if(!first || !last || !email || !msg){
+        show('warn','Please fill in your name, email and a few words about what you need.');
+        return;
+      }
+      show('', ''); // clear any prior status
+      btn.disabled = true; btn.textContent = 'Sending\u2026';
+
+      var base = [
+        ['first_name', first],
+        ['last_name', last],
+        ['name', name],
+        ['email', email],
+        ['_subject', 'New inquiry: ' + name],
+        ['_replyto', email],
+        ['message', msg + '\n\n\u2014 sent from therapytalks.info']
+      ];
+      if(f._company.value !== '') base.push(['_gotcha', f._company.value]); // honeypot
+
+      var build = function(t){
+        var d = new FormData();
+        base.forEach(function(p){ d.append(p[0], p[1]); });
+        if(t.field && t.token) d.append(t.field, t.token);
+        return d;
+      };
+      var doPost = function(d){
+        return fetch(FORM_ENDPOINT, {method:'POST', headers:{'Accept':'application/json'}, body:d});
+      };
+
+      try{
+        if(tt.token){ var age = Date.now() - (tt.issued||0); if(age < 3000){ btn.textContent='Verifying\u2026'; await sleep(3000 - age + 250); } }
+        btn.textContent = 'Sending\u2026';
+        var d = build(tt);
+        var r = await doPost(d);
+        if(!r.ok && r.status === 422){
+          btn.textContent = 'Verifying\u2026';
+          await sleep(3100);
+          var fresh = await getTT();
+          await sleep(3300);
+          btn.textContent = 'Sending\u2026';
+          d = build(fresh);
+          r = await doPost(d);
+        }
+        if(!r.ok) throw new Error('HTTP ' + r.status);
+        show('ok','\u2713 <b>Message sent!</b> We\u2019ll reply as soon as we can, usually within one business day. Thank you!');
+        f.reset();
+        tt = await getTT(); // refresh the single-use token for any next send
+      }catch(err){
+        show('err','Sorry, something went wrong sending your message. Please call (845) 494-1166 or email <a href="mailto:kristina@therapytalks.info" style="font-weight:600">kristina@therapytalks.info</a> and we\u2019ll take it from there.');
+      }
+      btn.disabled = false; btn.innerHTML = 'Send message <span class="arr" aria-hidden="true">\u2192</span>';
+    });
   })();
 </script>
 

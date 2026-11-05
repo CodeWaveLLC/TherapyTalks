@@ -679,6 +679,7 @@
         var fd = new FormData(f); // first_name, last_name, email, message (+ botcheck honeypot)
         fd.append('access_key', ACCESS_KEY);
         fd.append('subject', 'New inquiry — ' + first + ' ' + last);
+        fd.append('from_name', 'therapytalks.info'); // sender name shown in the From line
         var r = await fetch(ENDPOINT, { method:'POST', headers:{'Accept':'application/json'}, body:fd });
         var j = null; try { j = await r.json(); } catch(_){}
         if(!r.ok || (j && j.success === false)) throw new Error('HTTP ' + r.status);
